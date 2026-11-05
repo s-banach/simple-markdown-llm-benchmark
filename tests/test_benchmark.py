@@ -12,6 +12,7 @@ from simple_markdown_llm_benchmark import (
 )
 from simple_markdown_llm_benchmark.columns import ORDER_COLUMNS
 from simple_markdown_llm_benchmark.config import Content
+from simple_markdown_llm_benchmark.prose import PARAGRAPH_BREAK, narratives
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
 from simple_markdown_llm_benchmark.table import Row, parse_markdown
 
@@ -28,15 +29,26 @@ def column(headers: Row, data_rows: tuple[Row, ...], header: str) -> list[str]:
         BenchmarkConfig(rows=150, columns=50, near_duplicates=0.3, tables=2, questions=30, content="gibberish"),
         BenchmarkConfig(rows=7, near_duplicates=1, questions=10, kinds=("lookup", "row")),
         BenchmarkConfig(rows=1, columns=2, questions=1),
+        BenchmarkConfig(rows=60, columns=8, prose_columns=2, questions=40, kinds=("lookup", "quote", "row", "filter")),
+        BenchmarkConfig(
+            rows=60,
+            columns=8,
+            prose_columns=2,
+            questions=40,
+            kinds=("lookup", "quote", "row", "filter"),
+            content="gibberish",
+        ),
     ],
 )
 def test_every_answer_matches_the_rendered_table(config: BenchmarkConfig) -> None:
     for record in generate(config):
         headers, data_rows = parse_markdown(record.markdown)
+        prose_headers = headers[config.columns - config.prose_columns :]
         assert set(record.markdown.split("\n")[1]) == set("|- ")
         assert len(data_rows) == config.rows
         assert len(set(headers)) == config.columns
         assert all(len(row) == config.columns for row in data_rows)
+        assert all(PARAGRAPH_BREAK in cell for header in prose_headers for cell in column(headers, data_rows, header))
         assert [question.kind for question in record.questions] == list(islice(cycle(config.kinds), config.questions))
         for question in record.questions:
             match question:
@@ -45,6 +57,7 @@ def test_every_answer_matches_the_rendered_table(config: BenchmarkConfig) -> Non
                     assert [i for i, value in enumerate(keys) if value == question.key_value] == [question.row_index]
                     assert column(headers, data_rows, question.target_column)[question.row_index] == question.answer
                     assert question.key_column != question.target_column
+                    assert (question.target_column in prose_headers) == (question.kind == "quote")
                 case RowQuestion():
                     keys = column(headers, data_rows, question.key_column)
                     assert [i for i, value in enumerate(keys) if value == question.key_value] == [question.row_index]
@@ -56,6 +69,7 @@ def test_every_answer_matches_the_rendered_table(config: BenchmarkConfig) -> Non
                     assert 2 <= len(matches) <= 10
                     targets = column(headers, data_rows, question.target_column)
                     assert question.answer == "\n".join(targets[i] for i in matches)
+                    assert question.target_column not in prose_headers
 
 
 def key_positions(columns: int) -> list[int]:
@@ -96,8 +110,21 @@ def test_near_duplicates_cover_the_requested_fraction_of_key_values(content: Con
     [
         BenchmarkConfig(rows=100, content="gibberish", cell_length=1),
         BenchmarkConfig(columns=2, kinds=("filter",)),
+        BenchmarkConfig(kinds=("quote",)),
+        BenchmarkConfig(columns=3, prose_columns=2, kinds=("lookup",)),
+        BenchmarkConfig(rows=len(narratives()) // 2 + 1, columns=3, prose_columns=2, kinds=("quote",)),
     ],
 )
 def test_impossible_configs_raise(config: BenchmarkConfig) -> None:
     with pytest.raises(GenerationError):
         list(generate(config))
+
+
+def test_narratives_fit_table_cells() -> None:
+    texts = [narrative.text for narrative in narratives()]
+    assert len(set(texts)) == len(texts)
+    for text in texts:
+        paragraphs = text.split(PARAGRAPH_BREAK)
+        assert len(paragraphs) >= 2
+        assert all(paragraph and paragraph == paragraph.strip() for paragraph in paragraphs)
+        assert not set("|\\<\n") & set("".join(paragraphs))

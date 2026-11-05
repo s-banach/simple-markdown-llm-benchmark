@@ -1,5 +1,6 @@
 """Grade a model's answers to a test set by exact match, and classify each wrong answer by what went wrong."""
 
+import re
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -23,6 +24,9 @@ ErrorClass = Literal[
     "near-duplicate row",
     "wrong row and column",
     "not in table",
+    "partial",
+    "breaks changed",
+    "edited",
     "wrong cell count",
     "wrong cells",
     "rows missed",
@@ -32,14 +36,17 @@ ErrorClass = Literal[
 ]
 """
 - no answer: the reply has no block for the question, or an empty one.
-- wrong column: a lookup answer from another cell of the right row, or a filter answer holding the values of another column of the matching rows.
-- wrong row, near-duplicate row: a lookup answer from the target column of another row, or a row copy of another row; near-duplicate when that row's key is one character edit from the asked key.
-- wrong row and column: a lookup answer found in the table, but neither in the right row nor in the target column.
+- wrong column: a lookup or quote answer from another cell of the right row, or a filter answer holding the values of another column of the matching rows.
+- wrong row, near-duplicate row: a lookup or quote answer from the target column of another row, or a row copy of another row; near-duplicate when that row's key is one character edit from the asked key.
+- wrong row and column: a lookup or quote answer found in the table, but neither in the right row nor in the target column.
 - not in table: a lookup answer found nowhere in the table.
+- partial, breaks changed, edited: a quote answer found nowhere in the table. Partial when its text, ignoring <br> tags, line breaks and spaces, is part of the passage, such as its first paragraph; breaks changed when it has all the passage's words but other <br> tags, line breaks or spaces between them; edited otherwise.
 - wrong cell count, wrong cells: a row copy with too few or too many cells, or with some cells wrong.
 - rows missed, rows added, wrong order: a filter answer that lacks some right values, has extra values, or has the right values in another order.
 - wrong values: a filter answer with both missing and extra values.
 """
+
+BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 
 class QuestionResult(BaseModel):
@@ -104,8 +111,25 @@ def classify_lookup(question: LookupQuestion, given: str, headers: Row, rows: Se
         return "wrong column"
     target = headers.index(question.target_column)
     return other_row(question, [row for row in rows if row[target] == given], headers) or (
-        "wrong row and column" if any(given in row for row in rows) else "not in table"
+        "wrong row and column" if any(given in row for row in rows) else not_in_table(question, given)
     )
+
+
+def not_in_table(question: LookupQuestion, given: str) -> ErrorClass:
+    """The class of a lookup or quote answer found nowhere in the table."""
+    if question.kind == "lookup":
+        return "not in table"
+    given_words, answer_words = words(given), words(question.answer)
+    if given_words == answer_words:
+        return "breaks changed"
+    if given_words and " ".join(given_words) in " ".join(answer_words):
+        return "partial"
+    return "edited"
+
+
+def words(text: str) -> list[str]:
+    """`text` split at whitespace and <br> tags."""
+    return BREAK_TAG.sub(" ", text).split()
 
 
 def classify_row(question: RowQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:

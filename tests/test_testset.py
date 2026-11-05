@@ -4,12 +4,26 @@ from pathlib import Path
 
 import pytest
 
-from simple_markdown_llm_benchmark import BenchmarkConfig, FilterQuestion, LookupQuestion, RowQuestion, make_record
+from simple_markdown_llm_benchmark import (
+    BenchmarkConfig,
+    FilterQuestion,
+    LookupQuestion,
+    RowQuestion,
+    generate,
+    make_record,
+)
 from simple_markdown_llm_benchmark.benchmark_v1 import benchmark_v1, settings
 from simple_markdown_llm_benchmark.grade import grade_record
+from simple_markdown_llm_benchmark.prose import PARAGRAPH_BREAK
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
 from simple_markdown_llm_benchmark.table import parse_markdown
-from simple_markdown_llm_benchmark.testset import parse_answers, read_replies, render_testset, write_testset
+from simple_markdown_llm_benchmark.testset import (
+    parse_answers,
+    read_replies,
+    records_by_test,
+    render_testset,
+    write_testset,
+)
 
 RECORD = make_record(BenchmarkConfig(rows=40, columns=12, near_duplicates=1, questions=12), 0)
 
@@ -50,6 +64,31 @@ def test_wrong_answers_are_classified() -> None:
     assert errors == {question.question_id: "no answer" for question in RECORD.questions} | {
         question_id: error for question_id, (_, error) in given.items()
     }
+
+
+def test_wrong_quotes_are_classified() -> None:
+    config = BenchmarkConfig(rows=20, columns=4, prose_columns=1, questions=6, kinds=("quote",))
+    record = make_record(config, 0)
+    right, partial, cut_off, breaks, edited, only_breaks = record.questions
+    given = {
+        right.question_id: (right.answer, None),
+        partial.question_id: (partial.answer.split(PARAGRAPH_BREAK)[0], "partial"),
+        cut_off.question_id: ("\n".join(cut_off.answer.split(PARAGRAPH_BREAK)[:-1]), "partial"),
+        breaks.question_id: (breaks.answer.replace(PARAGRAPH_BREAK, "\n"), "breaks changed"),
+        edited.question_id: (edited.answer + " Thank you.", "edited"),
+        only_breaks.question_id: (PARAGRAPH_BREAK, "edited"),
+    }
+    reply = "".join(f"=== Q{question_id + 1}\n{answer}\n" for question_id, (answer, _) in given.items())
+    errors = {result.question.question_id: result.error for result in grade_record("t", record, parse_answers(reply))}
+    assert errors == {question_id: error for question_id, (_, error) in given.items()}
+
+
+def test_tests_are_named_by_setting_and_table() -> None:
+    config = BenchmarkConfig(rows=5, columns=4, prose_columns=1, questions=2, kinds=("quote",), tables=2)
+    records = list(generate(config))
+    assert list(records_by_test(records)) == ["5x4_plausible_prose1_0", "5x4_plausible_prose1_1"]
+    with pytest.raises(ValueError):
+        records_by_test([*records, records[0]])
 
 
 def test_paths_that_would_mix_or_lose_results_raise(tmp_path: Path) -> None:

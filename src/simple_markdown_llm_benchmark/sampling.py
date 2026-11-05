@@ -38,6 +38,20 @@ def shuffled[T](rng: Random, items: Sequence[T]) -> list[T]:
     return result
 
 
+def sample[T](rng: Random, items: Sequence[T], count: int) -> list[T]:
+    """`count` entries of `items` drawn without replacement, in random order, by a partial Fisher-Yates shuffle.
+
+    Raises GenerationError when `items` holds fewer than `count` entries.
+    """
+    if count > len(items):
+        raise GenerationError(f"needs {count} distinct entries, but only {len(items)} are available")
+    pool = list(items)
+    for i in range(count):
+        j = i + randbelow(rng, len(pool) - i)
+        pool[i], pool[j] = pool[j], pool[i]
+    return pool[:count]
+
+
 def distinct_draws(rng: Random, space: Space, count: int) -> dict[str, Parts]:
     """`count` draws from `space` with different joined strings, keyed by joined string, in random order.
 

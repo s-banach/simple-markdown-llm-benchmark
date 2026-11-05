@@ -1,12 +1,12 @@
-from typing import Literal, get_args
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from simple_markdown_llm_benchmark.columns import ORDER_COLUMNS
 
 Content = Literal["plausible", "gibberish"]
-QuestionKind = Literal["lookup", "row", "filter"]
+QuestionKind = Literal["lookup", "quote", "row", "filter"]
 
 
 class BenchmarkConfig(BaseModel):
@@ -33,15 +33,34 @@ class BenchmarkConfig(BaseModel):
         le=1,
         description="Fraction of values in each key column (a column built to give every row a different value, such as order_id) that have a near duplicate: another value one substituted or swapped character away.",
     )
+    # Benchmark v1 answer keys, pinned by test_benchmark_v1_seed_0_is_unchanged, have no prose_columns field.
+    prose_columns: int = Field(
+        0,
+        ge=0,
+        exclude_if=lambda prose_columns: prose_columns == 0,
+        description="How many of the columns, placed last, hold prose: passages of two or more paragraphs joined by <br><br>. Plausible prose comes from CFPB consumer complaints; gibberish prose is random words in sentences.",
+    )
     pad: bool = Field(False, description="Pad cells with spaces so columns line up.")
     tables: int = Field(1, ge=1, description="Tables to generate, one JSON line each.")
     questions: int = Field(20, ge=1, description="Questions per table.")
     kinds: tuple[QuestionKind, ...] = Field(
-        get_args(QuestionKind), min_length=1, description="Question kinds, assigned to questions in turn."
+        ("lookup", "row", "filter"),
+        min_length=1,
+        description="Question kinds, assigned to questions in turn. lookup asks for one cell, quote for one prose cell, row for every cell of a row, and filter for a column's values in every row that matches a condition.",
     )
     seed: int = Field(0, description="Random seed.")
 
+    @model_validator(mode="after")
+    def keep_a_key_column(self) -> Self:
+        if self.prose_columns >= self.columns:
+            raise ValueError("--prose-columns must be below --columns, so the table keeps its key column")
+        return self
+
 
 def setting_name(config: BenchmarkConfig) -> str:
-    """Names the table settings that a test set varies, such as `1000x12_plausible`."""
-    return f"{config.rows}x{config.columns}_{config.content}" + ("_padded" if config.pad else "")
+    """Names the table settings that a test set varies, such as `1000x12_plausible` or `80x8_gibberish_prose2`."""
+    return (
+        f"{config.rows}x{config.columns}_{config.content}"
+        + (f"_prose{config.prose_columns}" if config.prose_columns else "")
+        + ("_padded" if config.pad else "")
+    )

@@ -6,12 +6,16 @@ A model's reply to `tests/<test>.txt` goes in `<answers directory>/<test>.txt`.
 """
 
 import re
-from collections.abc import Iterable, Mapping
+import sys
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from pydantic_settings import CliApp, CliPositionalArg, SettingsConfigDict
 
 from simple_markdown_llm_benchmark.benchmark import TableRecord
+from simple_markdown_llm_benchmark.config import setting_name
 
 INSTRUCTIONS = """Answer every question after the table using only the table. Copy cell text exactly.
 Reply with one block per question, in this format and nothing else:
@@ -23,12 +27,37 @@ Reply with one block per question, in this format and nothing else:
 
 Each question says what its answer holds. Put each value of a list answer on its own line."""
 
+PROSE_INSTRUCTIONS = (
+    "Some cells hold paragraphs separated by <br><br>. Copy <br> tags as they appear, and keep each cell on one line."
+)
+
 BLOCK_HEADER = re.compile(r"^[ \t]*=== Q(\d+)[ \t\r]*$", re.MULTILINE)
 
 
+class TestSetOptions(BaseModel):
+    """Write tables from simple-markdown-llm-benchmark as a test set: a prompt in tests/<test>.txt and an answer key in keys/<test>.json for each table, where <test> is <setting>_<table_id>, such as 80x8_plausible_prose2_0."""
+
+    model_config = SettingsConfigDict(
+        frozen=True, cli_kebab_case=True, cli_prog_name="simple-markdown-llm-benchmark-testset"
+    )
+
+    records: CliPositionalArg[Path] = Field(description="JSON lines written by simple-markdown-llm-benchmark.")
+    output: CliPositionalArg[Path] = Field(description="Directory to write, which must be absent or empty.")
+
+
 def render_prompt(record: TableRecord) -> str:
+    instructions = f"{INSTRUCTIONS}\n{PROSE_INSTRUCTIONS}" if record.config.prose_columns else INSTRUCTIONS
     questions = "\n\n".join(f"Q{question.question_id + 1}. {question.question}" for question in record.questions)
-    return f"{INSTRUCTIONS}\n\n{record.markdown}\n\n## Questions\n\n{questions}\n"
+    return f"{instructions}\n\n{record.markdown}\n\n## Questions\n\n{questions}\n"
+
+
+def records_by_test(records: Sequence[TableRecord]) -> dict[str, TableRecord]:
+    """Records keyed by test `<setting>_<table_id>`. Raises ValueError when two records get the same test name."""
+    tests = [f"{setting_name(record.config)}_{record.table_id}" for record in records]
+    repeated = [test for test, count in Counter(tests).items() if count > 1]
+    if repeated:
+        raise ValueError(f"several tables would be named {', '.join(repeated)}; write them to separate test sets")
+    return dict(zip(tests, records, strict=True))
 
 
 def render_testset(records: Mapping[str, TableRecord]) -> dict[str, str]:
@@ -41,7 +70,7 @@ def render_testset(records: Mapping[str, TableRecord]) -> dict[str, str]:
 def write_testset(directory: Path, records: Mapping[str, TableRecord]) -> None:
     """Raises FileExistsError unless `directory` is absent or an empty directory, so tests from different runs never mix."""
     if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
-        raise FileExistsError(f"{directory} is not an empty directory; remove it or choose another --output")
+        raise FileExistsError(f"{directory} is not an empty directory; remove it or choose another directory")
     for path, text in render_testset(records).items():
         file = directory / path
         file.parent.mkdir(parents=True, exist_ok=True)
@@ -85,3 +114,18 @@ def parse_answers(text: str) -> dict[int, str]:
         int(number) - 1: "\n".join(line.strip() for line in body.split("\n") if line.strip())
         for number, body in zip(parts[1::2], parts[2::2])
     }
+
+
+def main() -> None:
+    try:
+        options = CliApp.run(TestSetOptions)
+        lines = options.records.read_text().splitlines()
+        tests = records_by_test([TableRecord.model_validate_json(line) for line in lines])
+        write_testset(options.output, tests)
+    except (ValueError, OSError) as error:
+        sys.exit(f"error: {error}")
+    print(f"wrote {len(tests)} tests to {options.output}")
+
+
+if __name__ == "__main__":
+    main()

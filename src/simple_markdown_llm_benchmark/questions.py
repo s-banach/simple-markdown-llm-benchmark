@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from simple_markdown_llm_benchmark.config import QuestionKind
 from simple_markdown_llm_benchmark.sampling import GenerationError, one_edit_apart, pick, randbelow
-from simple_markdown_llm_benchmark.table import Table
+from simple_markdown_llm_benchmark.table import ColumnRole, Table
 
 FILTER_MATCHES = range(2, 11)
 """Allowed numbers of rows matching a filter question's condition."""
@@ -30,10 +30,10 @@ class _QuestionFields(BaseModel):
 class LookupQuestion(_QuestionFields):
     """The value of `target_column` in the row whose `key_column` holds `key_value`.
 
-    `row_index` is the 0-based index of that data row. `column_distance` is the absolute difference between the positions of the key and target columns, 1 for adjacent columns. `key_near_duplicate` is true when another value in the key column is one character edit from `key_value`.
+    `kind` is quote when the target column is a prose column, and lookup otherwise. `row_index` is the 0-based index of that data row. `column_distance` is the absolute difference between the positions of the key and target columns, 1 for adjacent columns. `key_near_duplicate` is true when another value in the key column is one character edit from `key_value`.
     """
 
-    kind: Literal["lookup"] = "lookup"
+    kind: Literal["lookup", "quote"] = "lookup"
     key_column: str
     key_value: str
     target_column: str
@@ -72,17 +72,23 @@ type Question = Annotated[LookupQuestion | RowQuestion | FilterQuestion, Field(d
 def make_questions(rng: Random, table: Table, kinds: Sequence[QuestionKind], count: int) -> tuple[Question, ...]:
     """`count` questions about `table`, cycling through `kinds`."""
     asked = list(islice(cycle(kinds), count))
-    keys = [i for i, column in enumerate(table) if column.is_key]
+    keys = _positions(table, "key")
     conditions = [
         (i, value)
         for i, column in enumerate(table)
-        if not column.is_key
+        if column.role == "repeating"
         for value, matches in Counter(column.values).items()
         if matches in FILTER_MATCHES
     ]
     if "filter" in asked and not conditions:
         raise GenerationError(
             f"filter questions need a value that repeats in {FILTER_MATCHES.start} to {FILTER_MATCHES.stop - 1} rows of one column, and this table has none; change --rows or --columns, or drop filter from --kinds"
+        )
+    if "quote" in asked and not _positions(table, "prose"):
+        raise GenerationError("quote questions need a prose column; raise --prose-columns, or drop quote from --kinds")
+    if "lookup" in asked and len(table) - len(_positions(table, "prose")) < 2:
+        raise GenerationError(
+            "lookup questions need two columns that are not prose; raise --columns or lower --prose-columns, or drop lookup from --kinds"
         )
     return tuple(
         make_question(rng, table, kind, question_id, keys, conditions) for question_id, kind in enumerate(asked)
@@ -99,19 +105,22 @@ def make_question(
 ) -> Question:
     """`keys` are the positions of key columns; `conditions` are (column position, value) pairs allowed as filter conditions."""
     match kind:
-        case "lookup":
-            return lookup_question(rng, table, question_id, keys)
+        case "lookup" | "quote":
+            return lookup_question(rng, table, kind, question_id, keys)
         case "row":
             return row_question(rng, table, question_id, keys)
         case "filter":
             return filter_question(rng, table, question_id, conditions)
 
 
-def lookup_question(rng: Random, table: Table, question_id: int, keys: Sequence[int]) -> LookupQuestion:
+def lookup_question(
+    rng: Random, table: Table, kind: Literal["lookup", "quote"], question_id: int, keys: Sequence[int]
+) -> LookupQuestion:
     key, row_index = _key_and_row(rng, table, keys)
-    target = _other_column(rng, table, key)
+    target = _other_column(rng, table, key) if kind == "lookup" else pick(rng, _positions(table, "prose"))
     key_value = table[key].values[row_index]
     return LookupQuestion(
+        kind=kind,
         question_id=question_id,
         question=f'What is the value of column "{table[target].header}" in the row where column "{table[key].header}" is "{key_value}"? Reply with the exact cell text and nothing else.',
         answer=table[target].values[row_index],
@@ -161,7 +170,12 @@ def _key_and_row(rng: Random, table: Table, keys: Sequence[int]) -> tuple[int, i
 
 
 def _other_column(rng: Random, table: Table, excluded: int) -> int:
-    return pick(rng, [i for i in range(len(table)) if i != excluded])
+    """A column other than `excluded` that is not prose."""
+    return pick(rng, [i for i, column in enumerate(table) if i != excluded and column.role != "prose"])
+
+
+def _positions(table: Table, role: ColumnRole) -> list[int]:
+    return [i for i, column in enumerate(table) if column.role == role]
 
 
 def _has_near_duplicate(values: Sequence[str], value: str) -> bool:
