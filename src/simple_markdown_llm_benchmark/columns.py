@@ -1,7 +1,4 @@
-"""Column definitions for the order table that every benchmark table imitates.
-
-Plausible tables use these definitions directly. Gibberish tables keep the column layout and each column's number of distinct values, and replace headers and values with random strings of one fixed length.
-"""
+"""Column definitions for the order table that every benchmark table imitates."""
 
 import string
 from dataclasses import dataclass
@@ -17,7 +14,6 @@ class ColumnSpec:
     """How many distinct values the column draws from, weighted by 1/rank. None makes it a key column: every row gets a different value."""
 
 
-LOWERCASE = tuple(string.ascii_lowercase)
 UPPERCASE = tuple(string.ascii_uppercase)
 DIGITS = tuple(string.digits)
 NONZERO_DIGITS = DIGITS[1:]

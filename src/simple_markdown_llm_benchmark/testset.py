@@ -35,7 +35,7 @@ BLOCK_HEADER = re.compile(r"^[ \t]*=== Q(\d+)[ \t\r]*$", re.MULTILINE)
 
 
 class TestSetOptions(BaseModel):
-    """Write tables from simple-markdown-llm-benchmark as a test set: a prompt in tests/<test>.txt and an answer key in keys/<test>.json for each table, where <test> is <setting>_<table_id>, such as 80x8_plausible_prose2_0."""
+    """Write tables from simple-markdown-llm-benchmark as a test set: a prompt in tests/<test>.txt and an answer key in keys/<test>.json for each table, where <test> is <setting>_<table_id>, such as 80x8_prose2_0."""
 
     model_config = SettingsConfigDict(
         frozen=True, cli_kebab_case=True, cli_prog_name="simple-markdown-llm-benchmark-testset"

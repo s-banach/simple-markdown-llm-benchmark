@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 simple-markdown-llm-benchmark = "simple_markdown_llm_benchmark.cli:main"
 simple-markdown-llm-benchmark-v1 = "simple_markdown_llm_benchmark.benchmark_v1:main"
+simple-markdown-llm-benchmark-search = "simple_markdown_llm_benchmark.benchmark_search:main"
 simple-markdown-llm-benchmark-grade = "simple_markdown_llm_benchmark.grade:main"
 simple-markdown-llm-benchmark-testset = "simple_markdown_llm_benchmark.testset:main"
 

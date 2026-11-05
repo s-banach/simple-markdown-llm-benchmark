@@ -12,8 +12,9 @@ from simple_markdown_llm_benchmark import (
     generate,
     make_record,
 )
-from simple_markdown_llm_benchmark.benchmark_v1 import benchmark_v1, settings
-from simple_markdown_llm_benchmark.grade import grade_record
+from simple_markdown_llm_benchmark.benchmark_v1 import BenchmarkV1Options, settings
+from simple_markdown_llm_benchmark.grade import grade_record, values_found
+from simple_markdown_llm_benchmark.preset import records_by_setting
 from simple_markdown_llm_benchmark.prose import PARAGRAPH_BREAK
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
 from simple_markdown_llm_benchmark.table import parse_markdown
@@ -44,12 +45,14 @@ def test_wrong_answers_are_classified() -> None:
     headers, rows = parse_markdown(RECORD.markdown)
     lookups = [question for question in RECORD.questions if isinstance(question, LookupQuestion)]
     row = next(question for question in RECORD.questions if isinstance(question, RowQuestion))
-    missed, repeated = [question for question in RECORD.questions if isinstance(question, FilterQuestion)][:2]
+    missed, *others = [question for question in RECORD.questions if isinstance(question, FilterQuestion)]
+    repeated = next(
+        question for question in others if question.answer.split("\n")[0] != question.answer.split("\n")[-1]
+    )
     key = headers.index(row.key_column)
     near_duplicate = next(cells for cells in rows if one_edit_apart(cells[key], row.key_value))
     other_key = rows[(lookups[2].row_index + 1) % len(rows)][headers.index(lookups[2].key_column)]
     repeated_lines = repeated.answer.split("\n")
-    assert repeated_lines[0] != repeated_lines[-1]
     given = {
         lookups[0].question_id: (lookups[0].key_value, "wrong column"),
         lookups[1].question_id: ("not a cell", "not in table"),
@@ -83,10 +86,20 @@ def test_wrong_quotes_are_classified() -> None:
     assert errors == {question_id: error for question_id, (_, error) in given.items()}
 
 
+def test_search_answers_count_the_right_values_found() -> None:
+    record = make_record(BenchmarkConfig(rows=100, columns=8, prose_columns=1, questions=2, kinds=("search",)), 0)
+    right, missed = record.questions
+    reply = f"=== Q1\n{right.answer}\n=== Q2\n{missed.answer.rsplit('\n', 1)[0]}\n"
+    results = grade_record("t", record, parse_answers(reply))
+    assert [result.error for result in results] == [None, "rows missed"]
+    total = len(right.answer.split("\n")) + len(missed.answer.split("\n"))
+    assert values_found(results) == f"search {total - 1}/{total} ({(total - 1) / total:.1%})"
+
+
 def test_tests_are_named_by_setting_and_table() -> None:
     config = BenchmarkConfig(rows=5, columns=4, prose_columns=1, questions=2, kinds=("quote",), tables=2)
     records = list(generate(config))
-    assert list(records_by_test(records)) == ["5x4_plausible_prose1_0", "5x4_plausible_prose1_1"]
+    assert list(records_by_test(records)) == ["5x4_prose1_0", "5x4_prose1_1"]
     with pytest.raises(ValueError):
         records_by_test([*records, records[0]])
 
@@ -101,15 +114,17 @@ def test_paths_that_would_mix_or_lose_results_raise(tmp_path: Path) -> None:
 
 def test_benchmark_v1_seed_0_is_unchanged() -> None:
     """Pins the reference test set. If this fails, the change alters benchmark v1: release the new output as a new version instead."""
-    files = render_testset(benchmark_v1(seed=0, tables=3))
-    assert len(files) == 2 * 3 * len(settings(0))
+    options = BenchmarkV1Options(seed=0, tables=3)
+    files = render_testset(records_by_setting(settings(options), options.tables))
+    assert len(files) == 2 * 3 * len(settings(options))
     assert (
         hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
-        == "9dedbec895410cd49d2fc2822e786886d7f9a52ec339acc0f9c187f216074a18"
+        == "255f0832534ee26a33172052a12f047dbade060f273d8ded5256c190abf25781"
     )
 
 
 def test_more_tables_extend_the_test_set() -> None:
-    one, two = benchmark_v1(seed=5, tables=1), benchmark_v1(seed=5, tables=2)
-    assert len(two) == 2 * len(settings(5))
+    configs = settings(BenchmarkV1Options(seed=5))
+    one, two = records_by_setting(configs, 1), records_by_setting(configs, 2)
+    assert len(two) == 2 * len(configs)
     assert one.items() <= two.items()

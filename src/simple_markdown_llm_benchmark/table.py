@@ -1,9 +1,9 @@
 from dataclasses import dataclass, replace
-from itertools import islice
+from itertools import cycle, islice
 from random import Random
 from typing import Literal
 
-from simple_markdown_llm_benchmark.columns import LOWERCASE, ORDER_COLUMNS, ColumnSpec
+from simple_markdown_llm_benchmark.columns import ORDER_COLUMNS, ColumnSpec
 from simple_markdown_llm_benchmark.config import BenchmarkConfig
 from simple_markdown_llm_benchmark.prose import PROSE_HEADER, prose_values
 from simple_markdown_llm_benchmark.sampling import GenerationError, distinct_draws, near_duplicate, shuffled, zipf_draws
@@ -31,43 +31,26 @@ type Row = tuple[str, ...]
 
 def generate_table(rng: Random, config: BenchmarkConfig) -> Table:
     """The order-table columns, then the prose columns."""
-    specs, prose_headers = column_specs(rng, config)
     order_columns = tuple(
         Column(
             spec.header,
             tuple(column_values(rng, spec, config.rows, config.near_duplicates)),
             "key" if spec.distinct is None else "repeating",
         )
-        for spec in specs
+        for spec in column_specs(config)
     )
-    passages = prose_values(rng, config.content, config.prose_length, config.rows, len(prose_headers))
+    passages = prose_values(rng, config.prose_length, config.rows, config.prose_columns)
     return order_columns + tuple(
-        Column(header, values, "prose") for header, values in zip(prose_headers, passages, strict=True)
+        Column(suffixed(PROSE_HEADER, repeat), values, "prose") for repeat, values in enumerate(passages)
     )
 
 
-def column_specs(rng: Random, config: BenchmarkConfig) -> tuple[list[ColumnSpec], list[str]]:
-    """Specs of the first `config.columns - config.prose_columns` order-table columns, repeating them with suffixed headers when needed, and the headers of the prose columns."""
-    order_count = config.columns - config.prose_columns
-    layout = [(ORDER_COLUMNS[i % len(ORDER_COLUMNS)], i // len(ORDER_COLUMNS)) for i in range(order_count)]
-    match config.content:
-        case "plausible":
-            specs = [replace(spec, header=suffixed(spec.header, repeat)) for spec, repeat in layout]
-            return specs, [suffixed(PROSE_HEADER, repeat) for repeat in range(config.prose_columns)]
-        case "gibberish":
-            available = len(LOWERCASE) ** config.cell_length
-            needed = max(config.columns, config.rows, *(spec.distinct or 0 for spec, _ in layout))
-            if needed > available:
-                raise GenerationError(
-                    f"--cell-length {config.cell_length} allows {available} distinct strings, but this table needs {needed}; raise --cell-length"
-                )
-            space = (LOWERCASE,) * config.cell_length
-            headers = list(distinct_draws(rng, space, config.columns))
-            specs = [
-                ColumnSpec(header, space, spec.distinct)
-                for header, (spec, _) in zip(headers[:order_count], layout, strict=True)
-            ]
-            return specs, headers[order_count:]
+def column_specs(config: BenchmarkConfig) -> list[ColumnSpec]:
+    """Specs of the first `config.columns - config.prose_columns` order-table columns, repeating them with suffixed headers when needed."""
+    return [
+        replace(spec, header=suffixed(spec.header, i // len(ORDER_COLUMNS)))
+        for i, spec in enumerate(islice(cycle(ORDER_COLUMNS), config.columns - config.prose_columns))
+    ]
 
 
 def suffixed(header: str, repeat: int) -> str:

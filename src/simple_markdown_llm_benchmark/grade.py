@@ -12,7 +12,13 @@ from pydantic_settings import CliApp, CliPositionalArg, SettingsConfigDict
 
 from simple_markdown_llm_benchmark.benchmark import TableRecord
 from simple_markdown_llm_benchmark.config import QuestionKind, setting_name
-from simple_markdown_llm_benchmark.questions import FilterQuestion, LookupQuestion, Question, RowQuestion
+from simple_markdown_llm_benchmark.questions import (
+    FilterQuestion,
+    LookupQuestion,
+    Question,
+    RowQuestion,
+    SearchQuestion,
+)
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
 from simple_markdown_llm_benchmark.table import Row, parse_markdown
 from simple_markdown_llm_benchmark.testset import parse_answers, read_keys, read_replies
@@ -36,14 +42,14 @@ ErrorClass = Literal[
 ]
 """
 - no answer: the reply has no block for the question, or an empty one.
-- wrong column: a lookup or quote answer from another cell of the right row, or a filter answer holding the values of another column of the matching rows.
+- wrong column: a lookup or quote answer from another cell of the right row, or a filter or search answer holding the values of another column of the matching rows.
 - wrong row, near-duplicate row: a lookup or quote answer from the target column of another row, or a row copy of another row; near-duplicate when that row's key is one character edit from the asked key.
 - wrong row and column: a lookup or quote answer found in the table, but neither in the right row nor in the target column.
 - not in table: a lookup answer found nowhere in the table.
 - partial, breaks changed, edited: a quote answer found nowhere in the table. Partial when its text, ignoring <br> tags, line breaks and spaces, is part of the passage, such as its first paragraph; breaks changed when it has all the passage's words but other <br> tags, line breaks or spaces between them; edited otherwise.
 - wrong cell count, wrong cells: a row copy with too few or too many cells, or with some cells wrong.
-- rows missed, rows added, wrong order: a filter answer that lacks some right values, has extra values, or has the right values in another order.
-- wrong values: a filter answer with both missing and extra values.
+- rows missed, rows added, wrong order: a filter or search answer that lacks some right values, has extra values, or has the right values in another order.
+- wrong values: a filter or search answer with both missing and extra values.
 """
 
 BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
@@ -62,7 +68,7 @@ class QuestionResult(BaseModel):
 
 
 class GradeOptions(BaseModel):
-    """Grade answers to a test set by exact match. Prints accuracy by setting and question kind, and counts wrong answers by class."""
+    """Grade answers to a test set by exact match. Prints accuracy by setting and question kind, counts wrong answers by class, and prints the share of right values found in filter and search answers."""
 
     model_config = SettingsConfigDict(
         frozen=True, cli_kebab_case=True, cli_prog_name="simple-markdown-llm-benchmark-grade"
@@ -102,8 +108,8 @@ def classify(question: Question, given: str | None, headers: Row, rows: Sequence
             return classify_lookup(question, given, headers, rows)
         case RowQuestion():
             return classify_row(question, given, headers, rows)
-        case FilterQuestion():
-            return classify_filter(question, given, headers, rows)
+        case FilterQuestion() | SearchQuestion():
+            return classify_list(question, given, headers, rows)
 
 
 def classify_lookup(question: LookupQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:
@@ -147,7 +153,9 @@ def other_row(question: LookupQuestion | RowQuestion, sources: Sequence[Row], he
     return "near-duplicate row" if any(one_edit_apart(row[key], question.key_value) for row in sources) else "wrong row"
 
 
-def classify_filter(question: FilterQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:
+def classify_list(
+    question: FilterQuestion | SearchQuestion, given: str, headers: Row, rows: Sequence[Row]
+) -> ErrorClass:
     expected = Counter(question.answer.split("\n"))
     lines = Counter(given.split("\n"))
     if lines == expected:
@@ -163,8 +171,24 @@ def classify_filter(question: FilterQuestion, given: str, headers: Row, rows: Se
     return "wrong values"
 
 
+def values_found(results: Sequence[QuestionResult]) -> str:
+    """For each kind of question with a list answer, the share of the right values that the given answers hold, over all its questions."""
+    found: Counter[QuestionKind] = Counter()
+    expected: Counter[QuestionKind] = Counter()
+    for result in results:
+        if isinstance(result.question, FilterQuestion | SearchQuestion):
+            right = Counter(result.question.answer.split("\n"))
+            found[result.question.kind] += (right & Counter((result.given or "").split("\n"))).total()
+            expected[result.question.kind] += right.total()
+    return ", ".join(
+        f"{kind} {found[kind]}/{expected[kind]} ({found[kind] / expected[kind]:.1%})"
+        for kind in get_args(QuestionKind)
+        if expected[kind]
+    )
+
+
 def report(results: Sequence[QuestionResult]) -> str:
-    """Accuracy by setting and question kind, then wrong answers counted by class."""
+    """Accuracy by setting and question kind, wrong answers counted by class, and the share of right values found in list answers."""
     kinds = [kind for kind in get_args(QuestionKind) if any(result.question.kind == kind for result in results)]
     settings = list(dict.fromkeys(result.setting for result in results))
     width = max(map(len, [*settings, "setting"]))
@@ -182,7 +206,9 @@ def report(results: Sequence[QuestionResult]) -> str:
     rows = [line(setting, [result for result in results if result.setting == setting]) for setting in settings]
     errors = Counter(result.error for result in results if result.error is not None)
     error_line = ", ".join(f"{error} {count}" for error, count in errors.most_common()) or "none"
-    return "\n".join([header, *rows, line("all", results), "", f"wrong answers by class: {error_line}"])
+    lines = [header, *rows, line("all", results), "", f"wrong answers by class: {error_line}"]
+    found = values_found(results)
+    return "\n".join([*lines, f"right values found in list answers: {found}"] if found else lines)
 
 
 def main() -> None:
