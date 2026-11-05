@@ -74,7 +74,7 @@ def write_testset(directory: Path, records: Mapping[str, TableRecord]) -> None:
     for path, text in render_testset(records).items():
         file = directory / path
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(text)
+        file.write_text(text, encoding="utf-8")
 
 
 def read_keys(directory: Path) -> dict[str, TableRecord]:
@@ -87,7 +87,7 @@ def read_keys(directory: Path) -> dict[str, TableRecord]:
 
 def read_key(path: Path) -> TableRecord:
     try:
-        return TableRecord.model_validate_json(path.read_text())
+        return TableRecord.model_validate_json(path.read_text(encoding="utf-8"))
     except ValidationError as error:
         raise ValueError(f"{path}: {error}") from error
 
@@ -119,7 +119,7 @@ def parse_answers(text: str) -> dict[int, str]:
 def main() -> None:
     try:
         options = CliApp.run(TestSetOptions)
-        lines = options.records.read_text().splitlines()
+        lines = options.records.read_text(encoding="utf-8").splitlines()
         tests = records_by_test([TableRecord.model_validate_json(line) for line in lines])
         write_testset(options.output, tests)
     except (ValueError, OSError) as error:

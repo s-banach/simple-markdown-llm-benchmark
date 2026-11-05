@@ -38,7 +38,12 @@ class Narrative(BaseModel):
 
 @cache
 def narratives(length: ProseLength) -> tuple[Narrative, ...]:
-    lines = files("simple_markdown_llm_benchmark").joinpath(f"narratives_{length}.jsonl").read_text().splitlines()
+    lines = (
+        files("simple_markdown_llm_benchmark")
+        .joinpath(f"narratives_{length}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     return tuple(Narrative.model_validate_json(line) for line in lines)
 
 

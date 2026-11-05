@@ -206,7 +206,7 @@ def main() -> None:
     print(report(results))
     if options.details is not None:
         try:
-            options.details.write_text("".join(result.model_dump_json() + "\n" for result in results))
+            options.details.write_text("".join(result.model_dump_json() + "\n" for result in results), encoding="utf-8")
         except OSError as error:
             sys.exit(f"error: {error}")
 
