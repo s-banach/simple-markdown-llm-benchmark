@@ -40,7 +40,7 @@ def generate_table(rng: Random, config: BenchmarkConfig) -> Table:
         )
         for spec in specs
     )
-    passages = prose_values(rng, config.content, config.rows, len(prose_headers))
+    passages = prose_values(rng, config.content, config.prose_length, config.rows, len(prose_headers))
     return order_columns + tuple(
         Column(header, values, "prose") for header, values in zip(prose_headers, passages, strict=True)
     )

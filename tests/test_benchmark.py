@@ -1,4 +1,7 @@
-from itertools import cycle, islice
+import re
+from itertools import cycle, groupby, islice
+from operator import itemgetter
+from typing import get_args
 
 import pytest
 
@@ -11,10 +14,13 @@ from simple_markdown_llm_benchmark import (
     generate,
 )
 from simple_markdown_llm_benchmark.columns import ORDER_COLUMNS
-from simple_markdown_llm_benchmark.config import Content
+from simple_markdown_llm_benchmark.config import Content, ProseLength
 from simple_markdown_llm_benchmark.prose import PARAGRAPH_BREAK, narratives
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
 from simple_markdown_llm_benchmark.table import Row, parse_markdown
+
+SENTENCE_END = re.compile(r"(?<=[.!?]) (?=[A-Z])")
+"""Where the narratives were split into sentences when the short texts were chosen."""
 
 
 def column(headers: Row, data_rows: tuple[Row, ...], header: str) -> list[str]:
@@ -37,6 +43,9 @@ def column(headers: Row, data_rows: tuple[Row, ...], header: str) -> list[str]:
             questions=40,
             kinds=("lookup", "quote", "row", "filter"),
             content="gibberish",
+        ),
+        BenchmarkConfig(
+            rows=60, columns=8, prose_columns=2, prose_length="short", questions=20, kinds=("quote", "row")
         ),
     ],
 )
@@ -112,7 +121,7 @@ def test_near_duplicates_cover_the_requested_fraction_of_key_values(content: Con
         BenchmarkConfig(columns=2, kinds=("filter",)),
         BenchmarkConfig(kinds=("quote",)),
         BenchmarkConfig(columns=3, prose_columns=2, kinds=("lookup",)),
-        BenchmarkConfig(rows=len(narratives()) // 2 + 1, columns=3, prose_columns=2, kinds=("quote",)),
+        BenchmarkConfig(rows=len(narratives("long")) // 2 + 1, columns=3, prose_columns=2, kinds=("quote",)),
     ],
 )
 def test_impossible_configs_raise(config: BenchmarkConfig) -> None:
@@ -120,11 +129,36 @@ def test_impossible_configs_raise(config: BenchmarkConfig) -> None:
         list(generate(config))
 
 
-def test_narratives_fit_table_cells() -> None:
-    texts = [narrative.text for narrative in narratives()]
+@pytest.mark.parametrize("length", get_args(ProseLength))
+def test_narratives_fit_table_cells(length: ProseLength) -> None:
+    texts = [narrative.text for narrative in narratives(length)]
     assert len(set(texts)) == len(texts)
     for text in texts:
         paragraphs = text.split(PARAGRAPH_BREAK)
         assert len(paragraphs) >= 2
         assert all(paragraph and paragraph == paragraph.strip() for paragraph in paragraphs)
         assert not set("|\\<\n") & set("".join(paragraphs))
+
+
+def test_short_narratives_delete_whole_sentences_of_long_ones() -> None:
+    """Each short text is its long text with sentences deleted: kept sentences keep their order, a space joins two from one long paragraph, and a paragraph break joins two from different ones."""
+    long_texts = {narrative.complaint_id: narrative.text for narrative in narratives("long")}
+    for narrative in narratives("short"):
+        assert len(narrative.text) <= 400
+        remaining = iter(sentences(long_texts[narrative.complaint_id]))
+        kept = [next(found for found in remaining if found[1] == sentence) for _, sentence in sentences(narrative.text)]
+        assert (
+            PARAGRAPH_BREAK.join(
+                " ".join(sentence for _, sentence in group) for _, group in groupby(kept, key=itemgetter(0))
+            )
+            == narrative.text
+        )
+
+
+def sentences(passage: str) -> list[tuple[int, str]]:
+    """Each sentence of `passage`, with the index of its paragraph."""
+    return [
+        (index, sentence)
+        for index, paragraph in enumerate(passage.split(PARAGRAPH_BREAK))
+        for sentence in SENTENCE_END.split(paragraph)
+    ]

@@ -1,6 +1,11 @@
 """Prose columns, which hold one passage per row: two or more paragraphs joined by PARAGRAPH_BREAK.
 
-Plausible passages are the consumer complaint narratives in `narratives.jsonl`: 500 complaints received in July 2026, from the CFPB narratives archive (https://www.consumerfinance.gov/foia-requests/foia-electronic-reading-room/cfpb-consumer-complaint-database-narratives-archive/). The archive flattens each narrative to one line, so each paragraph break replaces one space between sentences of the original text. Gibberish passages copy the paragraph word counts of a random narrative and fill them with random words.
+Plausible passages are consumer complaint narratives received in July 2026, from the CFPB narratives archive (https://www.consumerfinance.gov/foia-requests/foia-electronic-reading-room/cfpb-consumer-complaint-database-narratives-archive/). The archive flattens each narrative to one line, so each paragraph break replaces one space between sentences of the original text.
+
+- `narratives_long.jsonl` holds 500 narratives of 530 to 1522 characters, counting each PARAGRAPH_BREAK.
+- `narratives_short.jsonl` holds 466 of them shortened to at most 400 characters by deleting whole sentences, chosen by reading so each still tells its complaint. Kept sentences keep their order, and a paragraph break joins two kept sentences that the long text separates by one.
+
+Gibberish passages copy the paragraph word counts of a random narrative of the chosen length and fill them with random words.
 """
 
 import datetime
@@ -12,7 +17,7 @@ from random import Random
 from pydantic import BaseModel, ConfigDict
 
 from simple_markdown_llm_benchmark.columns import WORDS
-from simple_markdown_llm_benchmark.config import Content
+from simple_markdown_llm_benchmark.config import Content, ProseLength
 from simple_markdown_llm_benchmark.sampling import GenerationError, pick, sample
 
 PARAGRAPH_BREAK = "<br><br>"
@@ -32,14 +37,14 @@ class Narrative(BaseModel):
 
 
 @cache
-def narratives() -> tuple[Narrative, ...]:
-    lines = files("simple_markdown_llm_benchmark").joinpath("narratives.jsonl").read_text().splitlines()
+def narratives(length: ProseLength) -> tuple[Narrative, ...]:
+    lines = files("simple_markdown_llm_benchmark").joinpath(f"narratives_{length}.jsonl").read_text().splitlines()
     return tuple(Narrative.model_validate_json(line) for line in lines)
 
 
-def prose_values(rng: Random, content: Content, rows: int, columns: int) -> list[tuple[str, ...]]:
+def prose_values(rng: Random, content: Content, length: ProseLength, rows: int, columns: int) -> list[tuple[str, ...]]:
     """The passages of `columns` prose columns, `rows` per column. Plausible passages are all different narratives."""
-    pool = narratives()
+    pool = narratives(length)
     count = rows * columns
     match content:
         case "plausible":
