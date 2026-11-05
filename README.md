@@ -1,6 +1,6 @@
 # simple-markdown-llm-benchmark
 
-Generates large markdown tables and questions whose answers are exact text from the table, to measure how often an LLM retrieves table content with 100% accuracy. It only generates data: send the questions to a model and grade by string equality with whatever harness you use.
+Generates large markdown tables and questions whose answers are exact text from the table, to measure how often an LLM retrieves table content with 100% accuracy, and grades a model's answers by string equality.
 
 ## Usage
 
@@ -18,6 +18,35 @@ from simple_markdown_llm_benchmark import BenchmarkConfig, generate
 for record in generate(BenchmarkConfig(rows=1000, columns=30, content="gibberish")):
     prompt = f"{record.markdown}\n\n{record.questions[0].question}"
 ```
+
+## Benchmark v1
+
+Benchmark v1 is a ready-made test set built from the settings on which Claude Sonnet and Haiku failed most often:
+
+```
+uv run simple-markdown-llm-benchmark-v1                # writes benchmark_v1_seed0/
+# send each tests/<test>.txt to a model unchanged; save its reply as my_answers/<test>.txt
+uv run simple-markdown-llm-benchmark-grade benchmark_v1_seed0 my_answers --details details.jsonl
+```
+
+The test set holds 18 tables with 30 questions each (10 lookup, 10 row, 10 filter), 540 questions in all:
+
+- `tests/<test>.txt` is the whole prompt, ready for any harness: answer-format instructions, the table, then questions `Q1` to `Q30`.
+- `keys/<test>.json` holds the answers and question metadata, in the schema of the JSON lines below. Never show it to the model.
+
+A reply holds one block per question, headed `=== Q<n>`, with one value per line for list answers. The grader strips each line and drops blank lines and a byte order mark, so line endings and stray spaces added by a harness do not fail an answer. It prints accuracy by setting and question kind, and counts wrong answers by class: wrong column, wrong row, near-duplicate row (the row of a key one character edit from the asked one), wrong row and column, not in table, wrong cell count, wrong cells, rows missed, rows added, wrong order, wrong values, and no answer (a missing or empty block). `--details` writes every question with the answer given and its error class, for analysis by depth (`row_index`) or `column_distance`.
+
+`--seed` draws new tables with the same settings, for a fresh test set no model has seen, or to measure how much a score varies between draws. Seed 0 is the reference test set, and a test pins its exact output: a change to generation that alters it must ship as a new version. `--tables` sets tables per setting (default 3); raising it adds tables and keeps the existing ones.
+
+Every table has 12,000 cells, and each prompt about 140,000 characters, which Sonnet and Haiku read within a 200k-token context. Tests are named `<setting>_<index>`, with settings named as in the grader's report:
+
+| setting | failure it provokes |
+|---|---|
+| `1000x12_plausible`, `1000x12_gibberish` | matching rows left out of filter answers |
+| `300x40_plausible`, `300x40_gibberish` | the same, less often |
+| `100x120_plausible`, `100x120_gibberish` | a same-named column taken from another block of the 40-column schema (`invoice_number_3` for `invoice_number`), and cells shifted or dropped when copying a row |
+
+20% of key values have a near duplicate. The runs that chose these settings used one table per shape in each of four kinds of table, with 30 questions per table: the plausible and gibberish tables, the plausible table with its columns sorted by kind, and a table whose non-key cells were all prices. Sonnet answered 97% of questions correctly: every lookup and row copy, but 91% of filters. Haiku answered 71%, and copied only 1 of 20 rows correctly on the 120-column plausible and gibberish tables. Content made little difference to either model. Both of Sonnet's wrong-column errors took a column with a near-identical header, such as `invoice_number_3` for `invoice_number`.
 
 ## Tables
 

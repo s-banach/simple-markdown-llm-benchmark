@@ -13,17 +13,10 @@ from simple_markdown_llm_benchmark import (
 from simple_markdown_llm_benchmark.columns import ORDER_COLUMNS
 from simple_markdown_llm_benchmark.config import Content
 from simple_markdown_llm_benchmark.sampling import one_edit_apart
+from simple_markdown_llm_benchmark.table import Row, parse_markdown
 
 
-def parse(markdown: str) -> tuple[list[str], list[list[str]]]:
-    """Headers and data rows of a rendered table, with padding stripped."""
-    lines = markdown.split("\n")
-    cells = [[cell.strip() for cell in line.removeprefix("| ").removesuffix(" |").split(" | ")] for line in lines]
-    assert all(set(cell) == {"-"} for cell in cells[1])
-    return cells[0], cells[2:]
-
-
-def column(headers: list[str], data_rows: list[list[str]], header: str) -> list[str]:
+def column(headers: Row, data_rows: tuple[Row, ...], header: str) -> list[str]:
     return [row[headers.index(header)] for row in data_rows]
 
 
@@ -39,7 +32,8 @@ def column(headers: list[str], data_rows: list[list[str]], header: str) -> list[
 )
 def test_every_answer_matches_the_rendered_table(config: BenchmarkConfig) -> None:
     for record in generate(config):
-        headers, data_rows = parse(record.markdown)
+        headers, data_rows = parse_markdown(record.markdown)
+        assert set(record.markdown.split("\n")[1]) == set("|- ")
         assert len(data_rows) == config.rows
         assert len(set(headers)) == config.columns
         assert all(len(row) == config.columns for row in data_rows)
@@ -74,7 +68,7 @@ def test_questions_identify_rows_only_by_columns_built_as_keys(content: Content)
     """In small tables, columns such as quantity can be all distinct by chance; they must not serve as keys."""
     config = BenchmarkConfig(rows=6, columns=40, content=content, questions=60, kinds=("lookup", "row"))
     record = next(generate(config))
-    headers, _ = parse(record.markdown)
+    headers, _ = parse_markdown(record.markdown)
     key_headers = {headers[i] for i in key_positions(config.columns)}
     for question in record.questions:
         assert isinstance(question, LookupQuestion | RowQuestion)
@@ -90,7 +84,7 @@ def test_equal_configs_give_equal_output_and_seeds_differ() -> None:
 @pytest.mark.parametrize("content", ["plausible", "gibberish"])
 def test_near_duplicates_cover_the_requested_fraction_of_key_values(content: Content) -> None:
     config = BenchmarkConfig(rows=200, columns=40, content=content, near_duplicates=0.5, questions=1, kinds=("lookup",))
-    _, data_rows = parse(next(generate(config)).markdown)
+    _, data_rows = parse_markdown(next(generate(config)).markdown)
     key_columns = [[row[i] for row in data_rows] for i in key_positions(config.columns)]
     for values in key_columns:
         with_near_duplicate = sum(any(one_edit_apart(value, other) for other in values) for value in values)

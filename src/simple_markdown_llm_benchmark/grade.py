@@ -1,0 +1,191 @@
+"""Grade a model's answers to a test set by exact match, and classify each wrong answer by what went wrong."""
+
+import sys
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Literal, get_args
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import CliApp, CliPositionalArg, SettingsConfigDict
+
+from simple_markdown_llm_benchmark.benchmark import TableRecord
+from simple_markdown_llm_benchmark.config import QuestionKind, setting_name
+from simple_markdown_llm_benchmark.questions import FilterQuestion, LookupQuestion, Question, RowQuestion
+from simple_markdown_llm_benchmark.sampling import one_edit_apart
+from simple_markdown_llm_benchmark.table import Row, parse_markdown
+from simple_markdown_llm_benchmark.testset import parse_answers, read_keys, read_replies
+
+ErrorClass = Literal[
+    "no answer",
+    "wrong column",
+    "wrong row",
+    "near-duplicate row",
+    "wrong row and column",
+    "not in table",
+    "wrong cell count",
+    "wrong cells",
+    "rows missed",
+    "rows added",
+    "wrong order",
+    "wrong values",
+]
+"""
+- no answer: the reply has no block for the question, or an empty one.
+- wrong column: a lookup answer from another cell of the right row, or a filter answer holding the values of another column of the matching rows.
+- wrong row, near-duplicate row: a lookup answer from the target column of another row, or a row copy of another row; near-duplicate when that row's key is one character edit from the asked key.
+- wrong row and column: a lookup answer found in the table, but neither in the right row nor in the target column.
+- not in table: a lookup answer found nowhere in the table.
+- wrong cell count, wrong cells: a row copy with too few or too many cells, or with some cells wrong.
+- rows missed, rows added, wrong order: a filter answer that lacks some right values, has extra values, or has the right values in another order.
+- wrong values: a filter answer with both missing and extra values.
+"""
+
+
+class QuestionResult(BaseModel):
+    """`error` is None when `given` equals the answer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    test: str
+    setting: str
+    question: Question
+    given: str | None
+    error: ErrorClass | None
+
+
+class GradeOptions(BaseModel):
+    """Grade answers to a test set by exact match. Prints accuracy by setting and question kind, and counts wrong answers by class."""
+
+    model_config = SettingsConfigDict(
+        frozen=True, cli_kebab_case=True, cli_prog_name="simple-markdown-llm-benchmark-grade"
+    )
+
+    testset: CliPositionalArg[Path] = Field(description="Test set directory, holding keys/<test>.json.")
+    answers: CliPositionalArg[Path] = Field(
+        description="Directory holding the model's reply to tests/<test>.txt as <test>.txt. A missing reply counts as no answer."
+    )
+    details: Path | None = Field(
+        None, description="Write one JSON line per question, with the answer given and its error class, to this file."
+    )
+
+
+def grade_record(test: str, record: TableRecord, answers: Mapping[int, str]) -> list[QuestionResult]:
+    """`answers` holds the given answers keyed by `question_id`."""
+    headers, rows = parse_markdown(record.markdown)
+    return [
+        QuestionResult(
+            test=test,
+            setting=setting_name(record.config),
+            question=question,
+            given=(given := answers.get(question.question_id)),
+            error=classify(question, given, headers, rows),
+        )
+        for question in record.questions
+    ]
+
+
+def classify(question: Question, given: str | None, headers: Row, rows: Sequence[Row]) -> ErrorClass | None:
+    if not given:
+        return "no answer"
+    if given == question.answer:
+        return None
+    match question:
+        case LookupQuestion():
+            return classify_lookup(question, given, headers, rows)
+        case RowQuestion():
+            return classify_row(question, given, headers, rows)
+        case FilterQuestion():
+            return classify_filter(question, given, headers, rows)
+
+
+def classify_lookup(question: LookupQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:
+    if given in rows[question.row_index]:
+        return "wrong column"
+    target = headers.index(question.target_column)
+    return other_row(question, [row for row in rows if row[target] == given], headers) or (
+        "wrong row and column" if any(given in row for row in rows) else "not in table"
+    )
+
+
+def classify_row(question: RowQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:
+    cells = tuple(given.split("\n"))
+    if len(cells) != len(headers):
+        return "wrong cell count"
+    return other_row(question, [row for row in rows if row == cells], headers) or "wrong cells"
+
+
+def other_row(question: LookupQuestion | RowQuestion, sources: Sequence[Row], headers: Row) -> ErrorClass | None:
+    """The class of an answer taken from one of `sources`, rows other than the asked one; None when `sources` is empty."""
+    if not sources:
+        return None
+    key = headers.index(question.key_column)
+    return "near-duplicate row" if any(one_edit_apart(row[key], question.key_value) for row in sources) else "wrong row"
+
+
+def classify_filter(question: FilterQuestion, given: str, headers: Row, rows: Sequence[Row]) -> ErrorClass:
+    expected = Counter(question.answer.split("\n"))
+    lines = Counter(given.split("\n"))
+    if lines == expected:
+        return "wrong order"
+    target = headers.index(question.target_column)
+    if any(lines == Counter(rows[i][j] for i in question.row_indices) for j in range(len(headers)) if j != target):
+        return "wrong column"
+    missed, extra = expected - lines, lines - expected
+    if not extra:
+        return "rows missed"
+    if not missed:
+        return "rows added"
+    return "wrong values"
+
+
+def report(results: Sequence[QuestionResult]) -> str:
+    """Accuracy by setting and question kind, then wrong answers counted by class."""
+    kinds = [kind for kind in get_args(QuestionKind) if any(result.question.kind == kind for result in results)]
+    settings = list(dict.fromkeys(result.setting for result in results))
+    width = max(map(len, [*settings, "setting"]))
+
+    def line(label: str, group: Sequence[QuestionResult]) -> str:
+        groups = [*([result for result in group if result.question.kind == kind] for kind in kinds), group]
+        rights = [sum(result.error is None for result in g) for g in groups]
+        return (
+            f"{label:{width}}"
+            + "".join(f"{f'{right}/{len(g)}':>10}" for right, g in zip(rights, groups))
+            + f"  {rights[-1] / len(group):6.1%}"
+        )
+
+    header = f"{'setting':{width}}" + "".join(f"{kind:>10}" for kind in [*kinds, "all"])
+    rows = [line(setting, [result for result in results if result.setting == setting]) for setting in settings]
+    errors = Counter(result.error for result in results if result.error is not None)
+    error_line = ", ".join(f"{error} {count}" for error, count in errors.most_common()) or "none"
+    return "\n".join([header, *rows, line("all", results), "", f"wrong answers by class: {error_line}"])
+
+
+def main() -> None:
+    try:
+        options = CliApp.run(GradeOptions)
+        keys = read_keys(options.testset)
+        replies = read_replies(options.answers, keys)
+    except (ValueError, OSError) as error:
+        sys.exit(f"error: {error}")
+    results = [
+        result
+        for test, record in keys.items()
+        for result in grade_record(test, record, parse_answers(replies.get(test, "")))
+    ]
+    missing = [test for test in keys if test not in replies]
+    if missing:
+        print(
+            f"no reply for {len(missing)} of {len(keys)} tests, graded as no answer: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+    print(report(results))
+    if options.details is not None:
+        try:
+            options.details.write_text("".join(result.model_dump_json() + "\n" for result in results))
+        except OSError as error:
+            sys.exit(f"error: {error}")
+
+
+if __name__ == "__main__":
+    main()

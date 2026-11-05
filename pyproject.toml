@@ -14,6 +14,8 @@ dependencies = [
 
 [project.scripts]
 simple-markdown-llm-benchmark = "simple_markdown_llm_benchmark.cli:main"
+simple-markdown-llm-benchmark-v1 = "simple_markdown_llm_benchmark.benchmark_v1:main"
+simple-markdown-llm-benchmark-grade = "simple_markdown_llm_benchmark.grade:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

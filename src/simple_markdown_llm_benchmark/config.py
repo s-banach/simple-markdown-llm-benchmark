@@ -40,3 +40,8 @@ class BenchmarkConfig(BaseModel):
         get_args(QuestionKind), min_length=1, description="Question kinds, assigned to questions in turn."
     )
     seed: int = Field(0, description="Random seed.")
+
+
+def setting_name(config: BenchmarkConfig) -> str:
+    """Names the table settings that a test set varies, such as `1000x12_plausible`."""
+    return f"{config.rows}x{config.columns}_{config.content}" + ("_padded" if config.pad else "")

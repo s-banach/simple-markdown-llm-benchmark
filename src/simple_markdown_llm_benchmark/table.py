@@ -17,6 +17,9 @@ class Column:
 
 type Table = tuple[Column, ...]
 
+type Row = tuple[str, ...]
+"""The cells of one table line, from left to right."""
+
 
 def generate_table(rng: Random, config: BenchmarkConfig) -> Table:
     return tuple(
@@ -78,3 +81,12 @@ def render_markdown(table: Table, pad: bool) -> str:
         "| " + " | ".join(cell.ljust(width) for cell, width in zip(row, widths)) + " |"
         for row in (headers, separator, *data_rows)
     )
+
+
+def parse_markdown(markdown: str) -> tuple[Row, tuple[Row, ...]]:
+    """Headers and data rows of a table from `render_markdown`, with padding stripped."""
+    headers, _separator, *data_rows = (
+        tuple(cell.strip() for cell in line.removeprefix("| ").removesuffix(" |").split(" | "))
+        for line in markdown.split("\n")
+    )
+    return headers, tuple(data_rows)
